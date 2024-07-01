@@ -44,6 +44,7 @@ Temporary Items
 .idea/**/usage.statistics.xml
 .idea/**/dictionaries
 .idea/**/shelf
+.idea/misc.xml
 
 # AWS User-specific
 .idea/**/aws.xml
@@ -295,3 +296,7 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,pycharm+all,macos
+
+train/data/
+
+.python-version

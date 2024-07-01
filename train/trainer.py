@@ -2,6 +2,7 @@ from base.base_trainer import BaseTrainer
 from dataprovider.data_loader import CIFAR10DataLoader
 from dataprovider.data_setter import CIFAR10DataSetter
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
 from tqdm import tqdm
@@ -25,38 +26,34 @@ class ResNetTrainer(BaseTrainer):
         if self.mac_gpu:
             self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
             self.model = self.model.to(self.device)
+            self.model = torch.nn.DataParallel(self.model)
 
-    def _train_epoch(self, epoch):
-        batch_loss = 0
-        batch_total = 0
-        batch_correct = 0
+    def train(self, epoch):
+        print(f'{epoch} 번의 학습 시작')
         self.model.train()
 
-        for inputs, targets in tqdm(self.train_data_loader):
-            if self.mac_gpu:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
+        train_loss = 0
+        train_correct = 0
+        train_total = 0
+
+        for batch_idx, (inputs, targets) in enumerate(self.train_data_loader):
+            inputs, targets = inputs.to(self.device), targets.to(self.device)
             self.optimizer.zero_grad()
+
             outputs = self.model(inputs)
-            loss = self.loss(outputs, targets)
-            loss.backward()
+            batch_loss = self.loss(outputs, targets)
+            batch_loss.backward()
 
             self.optimizer.step()
+            train_loss += batch_loss.item()
 
-            batch_loss += loss.item()
             batch_total, batch_correct = self.metric(outputs, targets)
+            train_total += batch_total
+            train_correct += batch_correct
 
-        epoch_loss = batch_loss / len(self.train_data_loader.dataset)
-        epoch_accuracy = 100 * batch_correct / batch_total
+        train_acc = 100. * train_correct / train_total
 
-        return epoch_loss, epoch_accuracy
-
-    def train(self, epochs):
-        print(f'{epochs} 번의 학습 시작')
-        for epoch in range(epochs):
-            epoch_loss, epoch_accuracy = self._train_epoch(epoch)
-            print(f'Epoch: {epoch} | Loss: {epoch_loss:.4f} | Accuracy: {epoch_accuracy}')
-        print(f'{epochs} 번의 학습 완료')
-        return epoch_loss, epoch_accuracy
+        return train_loss, train_acc
 
     def validate(self):
         val_loss = 0
@@ -64,24 +61,34 @@ class ResNetTrainer(BaseTrainer):
         correct = 0
 
         self.model.eval()
-        for inputs, labels in self.valid_data_loader:
-
-            inputs, targets = inputs.to(self.device), labels.to(self.device)
+        for batch_idx, (inputs, targets) in enumerate(self.valid_data_loader):
+            inputs, targets = inputs.to(self.device), targets.to(self.device)
             total += targets.size(0)
 
             outputs = self.model(inputs)
-
-            val_loss = self.loss(outputs, labels).item()
+            val_loss += self.loss(outputs, targets).item()
 
             _, predicted = outputs.max(1)
             correct += predicted.eq(targets).sum().item()
+
         val_acc = 100 * correct / total
         return val_loss, val_acc
 
+    def adjust_learning_rate(self, epoch, learning_rate):
+        lr = learning_rate
+        if epoch >= 100:
+            lr /= 10
+        if epoch >= 150:
+            lr /= 10
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+
 
 if __name__ == '__main__':
-    epochs = 1
-    batch_size = 64
+    epochs = 10
+    learning_rate = 0.1
+    momentum = 0.9
+    weight_decay = 0.0002
 
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
@@ -100,12 +107,21 @@ if __name__ == '__main__':
     test_loader = CIFAR10DataLoader(test_dataset, batch_size=100, shuffle=False, num_workers=4)
 
     model = ResNet18()
-    optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=0.0002)
+    optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     loss_fn = resnet_loss
     metric_fn = resnet_accuracy
+
     resnet_trainer = ResNetTrainer(model=model, loss=loss_fn, optimizer=optimizer, metric=metric_fn,
                                    train_data_loader=train_loader, valid_data_loader=test_loader,
                                    mac_gpu=True)
 
-    train_loss, train_acc = resnet_trainer.train(epochs)
-    val_loss, val_acc = resnet_trainer.validate()
+    for epoch in range(0, epochs):
+        resnet_trainer.adjust_learning_rate(epoch, learning_rate)
+        train_loss, train_acc = resnet_trainer.train(epoch)
+        val_loss, val_acc = resnet_trainer.validate()
+        
+        print("train_loss", train_loss)
+        print("train_acc", train_acc)
+
+        print("val_loss", val_loss)
+        print("val_acc", val_acc)
